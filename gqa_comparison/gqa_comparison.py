@@ -272,7 +272,7 @@ class JaxGroupedQueryAttention(fnn.Module):
         self.attn_dropout = fnn.Dropout(self.dropout_rate)
         self.out_dropout = fnn.Dropout(self.dropout_rate)
 
-    def __call__(self, x, deterministic):
+    def __call__(self, x, deterministic, band_mask=None):
         batch_size, seq_len, _ = x.shape
         qkv = self.qkv_proj(x)
 
@@ -301,13 +301,17 @@ class JaxGroupedQueryAttention(fnn.Module):
             v = jnp.reshape(v, (batch_size, self.num_query_heads, seq_len, self.head_dim))
 
         attn_weights = jnp.matmul(q, jnp.swapaxes(k, -1, -2)) * self.scale
-        positions = jnp.arange(seq_len)
-        delta = positions[:, None] - positions[None, :]
-        if self.use_banded:
-            allowed = (delta >= 0) & (delta < self.window_size)
+        if band_mask is None:
+            positions = jnp.arange(seq_len)
+            delta = positions[:, None] - positions[None, :]
+            if self.use_banded:
+                allowed = (delta >= 0) & (delta < self.window_size)
+            else:
+                allowed = delta >= 0
+            additive_mask = jnp.where(allowed, 0.0, -1e9).astype(attn_weights.dtype)
         else:
-            allowed = delta >= 0
-        attn_weights = jnp.where(allowed[None, None, :, :], attn_weights, -1e9)
+            additive_mask = band_mask.astype(attn_weights.dtype)
+        attn_weights = attn_weights + additive_mask[None, None, :, :]
         attn_weights = jax.nn.softmax(attn_weights, axis=-1)
         attn_weights = self.attn_dropout(attn_weights, deterministic=deterministic)
         out = jnp.matmul(attn_weights, v).transpose(0, 2, 1, 3).reshape(batch_size, seq_len, self.embed_dim)
@@ -339,10 +343,10 @@ class JaxTransformerBlock(fnn.Module):
         self.ffn_dense2 = fnn.Dense(self.embed_dim)
         self.ffn_dropout = fnn.Dropout(self.dropout_rate)
 
-    def __call__(self, x, deterministic):
+    def __call__(self, x, deterministic, band_mask=None):
         residual = x
         x = self.norm1(x)
-        attn_out = self.attention(x, deterministic)
+        attn_out = self.attention(x, deterministic, band_mask=band_mask)
         x = residual + attn_out
         ffn_input = self.norm2(x)
         ffn_hidden = self.ffn_dense1(ffn_input)
@@ -363,7 +367,7 @@ class JaxOptimizedGQA_Transformer(fnn.Module):
     dropout_rate: float = 0.1
 
     def setup(self):
-        self.token_embedding = fnn.Embed(self.vocab_size, self.embed_dim)
+        self.token_embed = fnn.Embed(self.vocab_size, self.embed_dim)
         self.blocks = [
             JaxTransformerBlock(
                 embed_dim=self.embed_dim,
@@ -376,13 +380,17 @@ class JaxOptimizedGQA_Transformer(fnn.Module):
             for i in range(self.num_layers)
         ]
         self.ln_f = JaxRMSNorm(dim=self.embed_dim)
-        self.lm_head = fnn.Dense(self.vocab_size, use_bias=False)
 
-    def __call__(self, input_ids, deterministic=True):
-        x = self.token_embedding(input_ids)
-        for block in self.blocks:
-            x = block(x, deterministic=deterministic)
-        return self.lm_head(self.ln_f(x))
+    def __call__(self, input_ids, deterministic=True, masks=None):
+        x = self.token_embed(input_ids)
+        for idx, block in enumerate(self.blocks):
+            band_mask = None
+            if masks is not None:
+                band_mask = masks[idx]
+            x = block(x, deterministic=deterministic, band_mask=band_mask)
+        hidden = self.ln_f(x)
+        logits = jnp.einsum("bld,vd->blv", hidden, self.token_embed.embedding)
+        return logits
 
 
 def benchmark_jax(cfg):
@@ -398,7 +406,21 @@ def benchmark_jax(cfg):
     key = random.PRNGKey(0)
     dummy_input = jnp.ones((cfg.batch_size, cfg.seq_len), dtype=jnp.int32)
     params = model.init(key, dummy_input)["params"]
-    forward = jit(lambda p, x: model.apply({"params": p}, x, deterministic=True))
+    masks = None
+    if cfg.precompute_masks:
+        positions = jnp.arange(cfg.seq_len)
+        delta = positions[:, None] - positions[None, :]
+        band_allowed = (delta >= 0) & (delta < cfg.window_size)
+        band_mask = jnp.where(band_allowed, 0.0, -1e9).astype(jnp.float32)
+        masks = tuple(
+            band_mask if (layer_idx % 2) == 1 else None
+            for layer_idx in range(cfg.num_layers)
+        )
+
+    def run_forward(p, x):
+        return model.apply({"params": p}, x, deterministic=True, masks=masks)
+
+    forward = jit(run_forward)
 
     input_ids = random.randint(key, dummy_input.shape, 0, cfg.vocab_size)
 
@@ -457,6 +479,7 @@ def main():
     speedup = best_pytorch.avg_forward_ms / jax_result.avg_forward_ms
     print(f"\nBest PyTorch: {best_pytorch.backend} ({best_pytorch.avg_forward_ms:.2f} ms)")
     print(f"JAX: {jax_result.avg_forward_ms:.2f} ms")
+    print(f"Speedup (PyTorch/JAX): {speedup:.2f}x faster")
 
 
 if __name__ == "__main__":

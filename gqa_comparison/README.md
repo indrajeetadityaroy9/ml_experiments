@@ -9,11 +9,11 @@ Both implementations use identical architectures for fair comparison:
 ## Grouped-Query Attention
 In grouped-query attention, query heads are bucketed into groups that share key/value projections.
 ```math
-\begin{aligned*}
+\begin{aligned}
 \mathrm{Queries:} & \;\; \mathrm{Q} \in \mathbb{R}^{B \times H_q \times L \times d} \\
 \mathrm{Keys/Values:} & \;\; \mathrm{K}, \mathrm{V} \in \mathbb{R}^{B \times H_k \times L \times d} \\
 \mathrm{Grouping\;factor:} & \;\; g = \tfrac{H_q}{H_k}
-\end{aligned*}
+\end{aligned}
 ```
 
 For each group \( i \):

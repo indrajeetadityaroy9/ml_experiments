@@ -149,13 +149,10 @@ class LightningGQABlock(nn.Module):
             else:
                 attn_mask = self._build_banded_mask(seq_len, x.device)
 
-        attn_output = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            attn_mask=attn_mask,
-            dropout_p=self.dropout.p if self.training else 0.0,
-            is_causal=not self.use_banded,
+        attn_output = F.scaled_dot_product_attention(q,k,v,
+            attn_mask,
+            self.dropout.p if self.training else 0.0,
+            not self.use_banded,
         )
 
         attn_output = attn_output.transpose(1, 2).contiguous().view(x.size(0), x.size(1), self.embed_dim)
@@ -185,12 +182,10 @@ class LightningOptimizedGQA_Transformer(pl.LightningModule):
         self.lm_head = nn.Linear(cfg.embed_dim, cfg.vocab_size, bias=False)
         self.lm_head.weight = self.token_embedding.weight
 
-        # Apply torch.compile if configured
         if cfg.compile_mode and hasattr(torch, "compile"):
             self.forward = torch.compile(self.forward, mode=cfg.compile_mode)
 
     def precompute_masks(self, seq_len, device):
-        """Precompute masks for all banded layers"""
         for block in self.blocks:
             if block.use_banded:
                 mask = block._build_banded_mask(seq_len, device)
@@ -201,7 +196,6 @@ class LightningOptimizedGQA_Transformer(pl.LightningModule):
         for block in self.blocks:
             x = block(x)
         return self.lm_head(self.ln_f(x))
-
 
 
 def benchmark_pytorch(cfg, name="pytorch"):
@@ -247,7 +241,7 @@ class JaxRMSNorm(fnn.Module):
     def setup(self):
         self.weight = self.param('weight', lambda rng, shape: jnp.ones(shape), (self.dim,))
 
-    def __call__(self, x):
+    def call(self, x):
         norm = jnp.sqrt(jnp.mean(x ** 2, axis=-1, keepdims=True) + self.eps)
         return (x / norm) * self.weight
 
@@ -272,7 +266,7 @@ class JaxGroupedQueryAttention(fnn.Module):
         self.attn_dropout = fnn.Dropout(self.dropout_rate)
         self.out_dropout = fnn.Dropout(self.dropout_rate)
 
-    def __call__(self, x, deterministic, band_mask=None):
+    def call(self, x, deterministic, band_mask=None):
         batch_size, seq_len, _ = x.shape
         qkv = self.qkv_proj(x)
 
@@ -343,7 +337,7 @@ class JaxTransformerBlock(fnn.Module):
         self.ffn_dense2 = fnn.Dense(self.embed_dim)
         self.ffn_dropout = fnn.Dropout(self.dropout_rate)
 
-    def __call__(self, x, deterministic, band_mask=None):
+    def call(self, x, deterministic, band_mask=None):
         residual = x
         x = self.norm1(x)
         attn_out = self.attention(x, deterministic, band_mask=band_mask)
@@ -381,7 +375,7 @@ class JaxOptimizedGQA_Transformer(fnn.Module):
         ]
         self.ln_f = JaxRMSNorm(dim=self.embed_dim)
 
-    def __call__(self, input_ids, deterministic=True, masks=None):
+    def call(self, input_ids, deterministic=True, masks=None):
         x = self.token_embed(input_ids)
         for idx, block in enumerate(self.blocks):
             band_mask = None

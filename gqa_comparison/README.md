@@ -37,10 +37,10 @@ where:
 
 | Backend | Device | Configuration | Avg (ms) | Throughput (tok/s) | Parameters |
 |---------|--------|---------------|----------|--------------------|------------|
-| PyTorch | cuda   | reduce-overhead              | 25.70 | 79684  | 82.1M |
-| PyTorch | cuda   | max-autotune                 | 22.60 | 90627  | 82.1M |
-| PyTorch | cuda   | max-autotune + precompute    | 22.59 | 90653  | 82.1M |
-| PyTorch | cuda   | no-compile                   | 25.18 | 81324  | 82.1M |
-| JAX     | cuda   | JIT compiled                 | 7.98  | 256760 | 82.1M |
+| PyTorch | cuda   | reduce-overhead              | 22.97 | 89142  | 82.1M |
+| PyTorch | cuda   | max-autotune                 | 22.97 | 89170  | 82.1M |
+| PyTorch | cuda   | max-autotune + precompute    | 27.11 | 75547  | 82.1M |
+| PyTorch | cuda   | no-compile                   | 25.16 | 81412  | 82.1M |
+| JAX     | cuda   | JIT compiled                 | 8.95  | 228875 | 82.1M |
 
-The latest run shows a `2.83x` PyTorch-to-JAX speedup (best PyTorch config vs. JAX baseline)
+The latest run shows a `2.57x` PyTorch-to-JAX speedup (best PyTorch config vs. JAX baseline)
